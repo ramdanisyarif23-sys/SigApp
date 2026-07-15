@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">SIgApp</string>
+    <string name="sigapp_mesh">SIGAPP MESH</string>
+    <string name="tautkan_modul_lora">Tautkan Modul LoRa</string>
+    <string name="buka_kanal_komunikasi">BUKA KANAL KOMUNIKASI</string>
+    <string name="aktifkan_jaring_p2p">Aktifkan Jaring P2P</string>
+    <string name="ketik_data_pesan">Ketik data / pesan...</string>
+    <string name="kirim">Kirim</string>
+    <string name="transmisikan_data">Transmisikan data...</string>
+    <string name="kirim_pesan">Kirim Pesan</string>
+</resources>
