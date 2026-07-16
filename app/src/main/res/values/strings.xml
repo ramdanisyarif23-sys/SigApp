@@ -8,4 +8,6 @@
     <string name="kirim">Kirim</string>
     <string name="transmisikan_data">Transmisikan data...</string>
     <string name="kirim_pesan">Kirim Pesan</string>
+    <string name="pilih_peran">PILIH PERAN JARINGAN</string>
+    <string name="setup_lora">Pengaturan LoRa</string>
 </resources>

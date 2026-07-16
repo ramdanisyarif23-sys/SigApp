@@ -1,6 +1,7 @@
 package com.example.sigapp.ui
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -10,6 +11,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.example.sigapp.R
+import com.example.sigapp.engine.BleEngine
 import com.example.sigapp.engine.NearbyEngine
 import com.google.android.material.button.MaterialButton
 
@@ -31,8 +33,26 @@ class HubActivity : AppCompatActivity() {
         btnHost.setOnClickListener { showNameDialog(isHosting = true) }
         btnJoin.setOnClickListener { showNameDialog(isHosting = false) }
 
+        // MENGHUBUNGKAN KE JEMBATAN LORA
         btnLoraSetup.setOnClickListener {
-            Toast.makeText(this, "Modul LoRa belum terhubung", Toast.LENGTH_SHORT).show()
+            val options = arrayOf("Hubungkan ke Node A", "Hubungkan ke Node B")
+            AlertDialog.Builder(this)
+                .setTitle("Setup Jembatan LoRa")
+                .setItems(options) { _, which ->
+                    val macAddress = if (which == 0) BleEngine.MAC_NODE_A else BleEngine.MAC_NODE_B
+                    val btManager = getSystemService(android.content.Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+                    val btAdapter = btManager.adapter
+
+                    Toast.makeText(this, "Menyambungkan...", Toast.LENGTH_SHORT).show()
+
+                    BleEngine.connect(macAddress, btAdapter) { sukses, pesan ->
+                        runOnUiThread {
+                            Toast.makeText(this, pesan, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                .setNegativeButton("Batal", null)
+                .show()
         }
     }
 
@@ -47,11 +67,11 @@ class HubActivity : AppCompatActivity() {
             perms.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // INI KUNCI UTAMANYA UNTUK ANDROID 13+ (Memaksa pop-up Wi-Fi muncul)
             perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
         }
         requestPermissions(perms.toTypedArray(), 1)
     }
+
     private fun showNameDialog(isHosting: Boolean) {
         val input = EditText(this).apply {
             hint = "Masukkan Nama Panggilan"
@@ -75,7 +95,6 @@ class HubActivity : AppCompatActivity() {
                         Toast.makeText(this, "Mencari Jaringan di sekitar...", Toast.LENGTH_LONG).show()
                     }
 
-                    // Pindah ke ruang obrolan (Tombol manual di bawah sudah dihapus)
                     startActivity(Intent(this, ChatActivity::class.java))
                 }
             }
