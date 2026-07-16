@@ -1,5 +1,7 @@
 package com.example.sigapp.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
@@ -7,21 +9,24 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.work.Constraints
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.example.sigapp.R
 import com.example.sigapp.engine.BleEngine
 import com.example.sigapp.engine.NearbyEngine
-import com.example.sigapp.model.DataPayload
-import com.google.android.material.button.MaterialButton
+import com.example.sigapp.engine.SyncWorker
 import com.example.sigapp.model.AppDatabase
+import com.example.sigapp.model.DataPayload
 import com.example.sigapp.model.PesanLokal
-import java.util.UUID
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
+import com.google.android.material.button.MaterialButton
+import java.util.UUID
 
 class ChatActivity : AppCompatActivity() {
 
@@ -43,7 +48,7 @@ class ChatActivity : AppCompatActivity() {
         rvChat.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         rvChat.adapter = adapter
 
-        // Tarik riwayat dari database saat aplikasi dibuka
+        // 1. Tarik Riwayat (Load History)
         Thread {
             val riwayat = dbDao.getAllPesan()
             if (riwayat.isNotEmpty()) {
@@ -62,7 +67,7 @@ class ChatActivity : AppCompatActivity() {
             }
         }.start()
 
-        // Mendengarkan pesan dari Wi-Fi P2P
+        // 2. Mendengarkan pesan dari Wi-Fi P2P
         engine.onMessageReceived = { rawString ->
             runOnUiThread {
                 val payload = DataPayload.fromProtocolString(rawString)
@@ -73,16 +78,17 @@ class ChatActivity : AppCompatActivity() {
                             teks_pesan = payload.messageText, waktu = payload.timestamp,
                             lat = payload.lat, lon = payload.lon, sumber = "WIFI"
                         ))
+                        picuSinkronisasiLatarBelakang()
                     }.start()
                     tambahKeLayar("${payload.senderName} (WiFi): ${payload.messageText}", adapter, rvChat)
                 }
             }
         }
 
-        // Mendengarkan pesan dari LoRa ESP32
+        // 3. Mendengarkan pesan dari LoRa ESP32
         BleEngine.onMessageReceived = { rawString ->
             runOnUiThread {
-                // Mencoba parse sebagai DataPayload, jika gagal tampilkan teks mentah
+                android.util.Log.d("MESH_DEBUG", "TANGKAPAN LORA: $rawString")
                 val payload = DataPayload.fromProtocolString(rawString)
                 if (payload != null) {
                     Thread {
@@ -91,6 +97,7 @@ class ChatActivity : AppCompatActivity() {
                             teks_pesan = payload.messageText, waktu = payload.timestamp,
                             lat = payload.lat, lon = payload.lon, sumber = "LORA"
                         ))
+                        picuSinkronisasiLatarBelakang()
                     }.start()
                     tambahKeLayar("${payload.senderName} (LoRa): ${payload.messageText}", adapter, rvChat)
                 } else {
@@ -99,20 +106,24 @@ class ChatActivity : AppCompatActivity() {
             }
         }
 
-        // Mengirim Pesan
-        // Mengirim Pesan
+        // 4. Mengirim Pesan (Dengan GPS)
+        // 4. Mengirim Pesan (Optimasi Kecepatan & GPS)
         btnSend.setOnClickListener {
             val text = etMessage.text.toString().trim()
             if (text.isNotEmpty()) {
 
-                // 1. Cek apakah izin GPS sudah diberikan
+                // LANGSUNG kosongkan input agar aplikasi terasa cepat
+                etMessage.text.clear()
+
+                // Cek Izin GPS
                 if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                     ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1)
-                    return@setOnClickListener // Hentikan proses jika belum ada izin
+                    return@setOnClickListener
                 }
 
-                // 2. Tarik lokasi secara asinkron
-                fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                // Tarik Koordinat Asli (Gunakan CompleteListener agar tidak lag)
+                fusedLocationClient.lastLocation.addOnCompleteListener { task ->
+                    val location = if (task.isSuccessful) task.result else null
                     val currentLat = location?.latitude ?: 0.0
                     val currentLon = location?.longitude ?: 0.0
 
@@ -121,17 +132,17 @@ class ChatActivity : AppCompatActivity() {
                         senderName = HubActivity.currentUserName,
                         messageText = text,
                         timestamp = System.currentTimeMillis(),
-                        lat = currentLat, // <-- Koordinat asli disuntikkan di sini
-                        lon = currentLon  // <-- Koordinat asli disuntikkan di sini
+                        lat = currentLat,
+                        lon = currentLon
                     )
 
                     val stringPayload = payload.toProtocolString()
 
-                    // Tembakan Ganda
+                    // Tembakan Ganda (Smart Routing)
                     BleEngine.sendMessage(stringPayload)
                     engine.broadcastMessage(stringPayload)
 
-                    // Simpan ke SQLite Lokal
+                    // Simpan ke SQLite Lokal & Picu Sinkronisasi
                     Thread {
                         val simpanPesan = PesanLokal(
                             id_pesan = payload.messageId, pengirim = payload.senderName,
@@ -139,14 +150,24 @@ class ChatActivity : AppCompatActivity() {
                             lat = payload.lat, lon = payload.lon, sumber = "SAYA", is_sync = false
                         )
                         dbDao.insertPesan(simpanPesan)
+                        picuSinkronisasiLatarBelakang()
                     }.start()
 
-                    // Tampilkan di layar
+                    // Tampilkan di layar dengan segera
                     tambahKeLayar("Saya: $text", adapter, rvChat)
-                    etMessage.text.clear()
                 }
             }
         }
+    }
+
+    private fun picuSinkronisasiLatarBelakang() {
+        val syaratInternet = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+        val tugasSinkronisasi = OneTimeWorkRequestBuilder<SyncWorker>()
+            .setConstraints(syaratInternet)
+            .build()
+        WorkManager.getInstance(applicationContext).enqueue(tugasSinkronisasi)
     }
 
     private fun tambahKeLayar(teks: String, adapter: SimpleChatAdapter, rv: RecyclerView) {
