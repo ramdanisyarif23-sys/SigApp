@@ -35,10 +35,10 @@ class ChatActivity : AppCompatActivity() {
     private val fusedLocationClient by lazy { LocationServices.getFusedLocationProviderClient(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val dbDao = AppDatabase.getDatabase(this).pesanDao()
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_chat)
 
+        val dbDao = AppDatabase.getDatabase(this).pesanDao()
         engine = NearbyEngine.getInstance(this)
         val rvChat = findViewById<RecyclerView>(R.id.rv_chat)
         val etMessage = findViewById<EditText>(R.id.et_message)
@@ -48,35 +48,23 @@ class ChatActivity : AppCompatActivity() {
         rvChat.layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         rvChat.adapter = adapter
 
-        // 1. Tarik Riwayat (Load History)
-        Thread {
-            val riwayat = dbDao.getAllPesan()
-            if (riwayat.isNotEmpty()) {
-                runOnUiThread {
-                    for (pesan in riwayat) {
-                        val teksTampil = if (pesan.sumber == "SAYA") {
-                            "Saya: ${pesan.teks_pesan}"
-                        } else {
-                            "${pesan.pengirim} (${pesan.sumber}): ${pesan.teks_pesan}"
-                        }
-                        messagesList.add(teksTampil)
-                    }
-                    adapter.notifyDataSetChanged()
-                    rvChat.scrollToPosition(messagesList.size - 1)
-                }
-            }
-        }.start()
+        // Tampilkan data lokal dulu, lalu sedot data tertinggal dari awan
+        muatUlangLayar()
+        tarikPesanDariAwan()
 
-        // 2. Mendengarkan pesan dari Wi-Fi P2P
+        // Mendengarkan pesan dari Wi-Fi P2P
         engine.onMessageReceived = { rawString ->
             runOnUiThread {
                 val payload = DataPayload.fromProtocolString(rawString)
                 if (payload != null) {
+                    // CEK ANTI-PANTULAN
+                    if (payload.senderName == HubActivity.currentUserName) return@runOnUiThread
+
                     Thread {
                         dbDao.insertPesan(PesanLokal(
                             id_pesan = payload.messageId, pengirim = payload.senderName,
                             teks_pesan = payload.messageText, waktu = payload.timestamp,
-                            lat = payload.lat, lon = payload.lon, sumber = "WIFI"
+                            lat = payload.lat, lon = payload.lon, sumber = "WIFI", is_sync = false
                         ))
                         picuSinkronisasiLatarBelakang()
                     }.start()
@@ -85,17 +73,20 @@ class ChatActivity : AppCompatActivity() {
             }
         }
 
-        // 3. Mendengarkan pesan dari LoRa ESP32
+        // Mendengarkan pesan dari LoRa ESP32
         BleEngine.onMessageReceived = { rawString ->
             runOnUiThread {
                 android.util.Log.d("MESH_DEBUG", "TANGKAPAN LORA: $rawString")
                 val payload = DataPayload.fromProtocolString(rawString)
                 if (payload != null) {
+                    // CEK ANTI-PANTULAN
+                    if (payload.senderName == HubActivity.currentUserName) return@runOnUiThread
+
                     Thread {
                         dbDao.insertPesan(PesanLokal(
                             id_pesan = payload.messageId, pengirim = payload.senderName,
                             teks_pesan = payload.messageText, waktu = payload.timestamp,
-                            lat = payload.lat, lon = payload.lon, sumber = "LORA"
+                            lat = payload.lat, lon = payload.lon, sumber = "LORA", is_sync = false
                         ))
                         picuSinkronisasiLatarBelakang()
                     }.start()
@@ -106,8 +97,7 @@ class ChatActivity : AppCompatActivity() {
             }
         }
 
-        // 4. Mengirim Pesan (Dengan GPS)
-        // 4. Mengirim Pesan (Optimasi Kecepatan & GPS)
+        // Mengirim Pesan (Optimasi Kecepatan & GPS)
         btnSend.setOnClickListener {
             val text = etMessage.text.toString().trim()
             if (text.isNotEmpty()) {
@@ -121,7 +111,7 @@ class ChatActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
 
-                // Tarik Koordinat Asli (Gunakan CompleteListener agar tidak lag)
+                // Tarik Koordinat Asli
                 fusedLocationClient.lastLocation.addOnCompleteListener { task ->
                     val location = if (task.isSuccessful) task.result else null
                     val currentLat = location?.latitude ?: 0.0
@@ -153,7 +143,7 @@ class ChatActivity : AppCompatActivity() {
                         picuSinkronisasiLatarBelakang()
                     }.start()
 
-                    // Tampilkan di layar dengan segera
+                    // Tampilkan di layar
                     tambahKeLayar("Saya: $text", adapter, rvChat)
                 }
             }
@@ -170,6 +160,62 @@ class ChatActivity : AppCompatActivity() {
         WorkManager.getInstance(applicationContext).enqueue(tugasSinkronisasi)
     }
 
+    private fun tarikPesanDariAwan() {
+        Thread {
+            try {
+                val url = java.net.URL("https://api.entahlah831.uk/tarik-riwayat")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "GET"
+
+                if (conn.responseCode == 200) {
+                    val stream = conn.inputStream.bufferedReader().use { it.readText() }
+                    val jsonArray = org.json.JSONArray(stream)
+
+                    // --- Inisialisasi DB di dalam Thread yang aman ---
+                    val dbDao = AppDatabase.getDatabase(this@ChatActivity).pesanDao()
+
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val simpanPesan = PesanLokal(
+                            id_pesan = obj.getString("id_pesan"), pengirim = obj.getString("pengirim"),
+                            teks_pesan = obj.getString("teks_pesan"), waktu = obj.getLong("waktu"),
+                            lat = obj.getDouble("lat"), lon = obj.getDouble("lon"),
+                            sumber = "AWAN", is_sync = true
+                        )
+                        dbDao.insertPesan(simpanPesan)
+                    }
+
+                    muatUlangLayar()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SINKRON_AWAN", "Gagal narik dari awan: ${e.message}")
+            }
+        }.start()
+    }
+
+    private fun muatUlangLayar() {
+        Thread {
+            val dbDao = AppDatabase.getDatabase(this).pesanDao()
+            val riwayat = dbDao.getAllPesan()
+            runOnUiThread {
+                messagesList.clear()
+                for (pesan in riwayat) {
+                    val teksTampil = if (pesan.sumber == "SAYA") {
+                        "Saya: ${pesan.teks_pesan}"
+                    } else {
+                        "${pesan.pengirim} (${pesan.sumber}): ${pesan.teks_pesan}"
+                    }
+                    messagesList.add(teksTampil)
+                }
+                val rvChat = findViewById<RecyclerView>(R.id.rv_chat)
+                rvChat.adapter?.notifyDataSetChanged()
+                if (messagesList.isNotEmpty()) {
+                    rvChat.scrollToPosition(messagesList.size - 1)
+                }
+            }
+        }.start()
+    }
+
     private fun tambahKeLayar(teks: String, adapter: SimpleChatAdapter, rv: RecyclerView) {
         messagesList.add(teks)
         adapter.notifyItemInserted(messagesList.size - 1)
@@ -177,22 +223,33 @@ class ChatActivity : AppCompatActivity() {
     }
 
     class SimpleChatAdapter(private val dataSet: List<String>) : RecyclerView.Adapter<SimpleChatAdapter.ViewHolder>() {
-        class ViewHolder(val textView: TextView) : RecyclerView.ViewHolder(textView)
+        class ViewHolder(view: android.view.View) : RecyclerView.ViewHolder(view) {
+            val root: android.widget.LinearLayout = view.findViewById(R.id.root_chat)
+            val bubble: android.widget.LinearLayout = view.findViewById(R.id.bubble_chat)
+            val tvNama: TextView = view.findViewById(R.id.tv_nama)
+            val tvTeks: TextView = view.findViewById(R.id.tv_teks)
+        }
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-            val tv = TextView(parent.context).apply {
-                layoutParams = ViewGroup.MarginLayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(16, 16, 16, 16) }
-                textSize = 16f
-                setTextColor(Color.WHITE)
-            }
-            return ViewHolder(tv)
+            val view = android.view.LayoutInflater.from(parent.context).inflate(R.layout.item_chat, parent, false)
+            return ViewHolder(view)
         }
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
             val msg = dataSet[position]
-            holder.textView.text = msg
-            holder.textView.gravity = if (msg.startsWith("Saya:")) Gravity.END else Gravity.START
-            holder.textView.setTextColor(if (msg.startsWith("Saya:")) android.graphics.Color.parseColor("#00FF66") else android.graphics.Color.WHITE)
+            val isSaya = msg.startsWith("Saya:")
+
+            // Memisahkan nama dan isi pesan
+            holder.tvTeks.text = if (isSaya) msg.removePrefix("Saya:").trim() else msg.substringAfter("):").trim()
+            holder.tvNama.text = if (isSaya) "Saya" else msg.substringBefore("):") + ")"
+
+            // Melempar balon ke Kanan atau Kiri
+            holder.root.gravity = if (isSaya) Gravity.END else Gravity.START
+
+            // Memasang warna balon yang dibuat sebelumnya
+            holder.bubble.setBackgroundResource(if (isSaya) R.drawable.bg_chat_saya else R.drawable.bg_chat_dia)
+
+            // Mengatur warna teks (Putih untuk balon biru, Hitam untuk balon putih)
+            holder.tvTeks.setTextColor(if (isSaya) Color.WHITE else Color.parseColor("#1E1E1E"))
+            holder.tvNama.setTextColor(if (isSaya) Color.parseColor("#E0E0E0") else Color.GRAY)
         }
         override fun getItemCount() = dataSet.size
     }
