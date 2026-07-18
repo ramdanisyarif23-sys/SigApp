@@ -113,6 +113,7 @@ class HubActivity : AppCompatActivity() {
                         runOnUiThread {
                             Toast.makeText(this, pesan, Toast.LENGTH_SHORT).show()
                             if (sukses) {
+                                aktifkanIndikator(R.id.ind_lora)
                                 findViewById<TextView>(R.id.tv_status_lora).text = "Terhubung: ${deviceTerpilih.name}"
                             }
                         }
@@ -124,7 +125,8 @@ class HubActivity : AppCompatActivity() {
             dialog.show()
             btAdapter.startDiscovery()
         }
-
+        val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        if (cm.activeNetworkInfo?.isConnected == true) aktifkanIndikator(R.id.ind_awan)
         // 3. TOMBOL MASUK CHAT
         btnMasukChat.setOnClickListener {
             if (currentUserName == "User") {
@@ -179,6 +181,7 @@ class HubActivity : AppCompatActivity() {
     private fun mulaiJaringan(name: String, isHosting: Boolean) {
         if (name.isNotEmpty()) {
             currentUserName = name
+            aktifkanIndikator(R.id.ind_wifi)
             val engine = NearbyEngine.getInstance(this)
 
             if (isHosting) {
@@ -205,5 +208,8 @@ class HubActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         unregisterReceiver(receiver)
+    }
+    private fun aktifkanIndikator(idView: Int) {
+        findViewById<android.widget.TextView>(idView).setTextColor(android.graphics.Color.parseColor("#4CAF50")) // Ubah jadi hijau
     }
 }
